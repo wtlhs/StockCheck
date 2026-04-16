@@ -451,6 +451,56 @@ html, body {
   margin-bottom: 16px;
 }
 
+/* ========== Parts Detail Table ========== */
+.parts-detail {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.parts-detail-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.parts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 16px;
+}
+
+.parts-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 13px;
+}
+
+.parts-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  line-height: 1.5;
+}
+
+.parts-table tr:last-child td {
+  border-bottom: none;
+}
+
+.parts-table td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.parts-ref {
+  display: block;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 /* ========== Toast ========== */
 .toast {
   position: fixed;

@@ -1,12 +1,16 @@
 'use strict';
 
 const App = {
-  VERSION: '20260416-02',
+  VERSION: '20260416-04',
   currentPage: 'page-home',
   _toastTimer: null,
   _indexData: null,
-  _fullCodeSet: new Set(),
-  _plainCodeSet: new Set(),
+  _shippedOutCodeSet: new Set(),
+  _shippedOutPlainSet: new Set(),
+  _inStockCodeSet: new Set(),
+  _inStockPlainSet: new Set(),
+  _inStockMap: {},
+  _partTrayMap: {},
   _recentInspections: [],
   _isDataReady: false,
 
@@ -73,9 +77,12 @@ const App = {
     if (cardEl) cardEl.className = 'data-status-card status-ready';
     if (titleEl) titleEl.textContent = '基础数据已加载';
     if (descEl) {
+      const shipped = this._indexData.shippedOut ? this._indexData.shippedOut.count : 0;
+      const inStock = this._indexData.inStock ? this._indexData.inStock.invoiceCount : 0;
       descEl.innerHTML =
         '来源：' + Utils.esc(this._indexData.source || '-') + '<br>' +
-        '索引条数：' + Utils.esc(String(this._indexData.count || 0)) + '<br>' +
+        '已出库：' + Utils.esc(String(shipped)) + ' 票<br>' +
+        '在库：' + Utils.esc(String(inStock)) + ' 票<br>' +
         '版本：' + Utils.esc(this._indexData.version || '-');
     }
     if (iconEl) iconEl.innerHTML = '&#128230;';
@@ -118,18 +125,45 @@ const App = {
       this._indexData = {
         version: String(data.version),
         source: String(data.source),
-        count: Number(data.count),
-        codes: data.codes.slice(),
-        plainCodes: data.plainCodes.slice()
+        shippedOut: data.shippedOut ? {
+          count: data.shippedOut.count,
+          codes: data.shippedOut.codes.slice(),
+          plainCodes: data.shippedOut.plainCodes.slice()
+        } : null,
+        inStock: data.inStock ? {
+          invoiceCount: data.inStock.invoiceCount,
+          items: data.inStock.items,
+          plainCodes: data.inStock.plainCodes.slice()
+        } : null
       };
-      this._fullCodeSet = new Set(this._indexData.codes);
-      this._plainCodeSet = new Set(this._indexData.plainCodes);
+      this._shippedOutCodeSet = this._indexData.shippedOut
+        ? new Set(this._indexData.shippedOut.codes)
+        : new Set();
+      this._shippedOutPlainSet = this._indexData.shippedOut
+        ? new Set(this._indexData.shippedOut.plainCodes)
+        : new Set();
+      this._inStockCodeSet = this._indexData.inStock
+        ? new Set(Object.keys(this._indexData.inStock.items))
+        : new Set();
+      this._inStockPlainSet = this._indexData.inStock
+        ? new Set(this._indexData.inStock.plainCodes)
+        : new Set();
+      this._inStockMap = this._indexData.inStock
+        ? this._indexData.inStock.items
+        : {};
+      this._partTrayMap = (data.partTrayMap && typeof data.partTrayMap === 'object')
+        ? data.partTrayMap
+        : {};
       this._isDataReady = true;
       this.renderHomeStatus();
     } catch (error) {
       this._indexData = null;
-      this._fullCodeSet = new Set();
-      this._plainCodeSet = new Set();
+      this._shippedOutCodeSet = new Set();
+      this._shippedOutPlainSet = new Set();
+      this._inStockCodeSet = new Set();
+      this._inStockPlainSet = new Set();
+      this._inStockMap = {};
+      this._partTrayMap = {};
       this._isDataReady = false;
       this.renderHomeStatus();
       this.showToast('基础数据加载失败', true);
@@ -141,22 +175,38 @@ const App = {
       throw new Error('索引文件格式错误');
     }
 
-    if (!Array.isArray(data.codes) || !Array.isArray(data.plainCodes)) {
-      throw new Error('索引文件缺少数组字段');
+    // 兼容旧版格式
+    if (data.codes && Array.isArray(data.codes)) {
+      if (!Array.isArray(data.plainCodes)) {
+        throw new Error('索引文件缺少数组字段');
+      }
+      return;
     }
 
-    if (!Number.isInteger(data.count)) {
-      throw new Error('索引文件 count 非整数');
+    // 新版格式验证
+    const shipped = data.shippedOut;
+    if (shipped) {
+      if (!Array.isArray(shipped.codes) || !Array.isArray(shipped.plainCodes)) {
+        throw new Error('shippedOut 缺少数组字段');
+      }
+      if (shipped.codes.length !== shipped.count || shipped.plainCodes.length !== shipped.count) {
+        throw new Error('shippedOut 条数不一致');
+      }
     }
 
-    if (data.codes.length !== data.count || data.plainCodes.length !== data.count) {
-      throw new Error('索引文件条数不一致');
+    const inStock = data.inStock;
+    if (inStock) {
+      if (typeof inStock.items !== 'object' || Array.isArray(inStock.items)) {
+        throw new Error('inStock.items 格式错误');
+      }
+      const keys = Object.keys(inStock.items);
+      if (keys.length !== inStock.invoiceCount) {
+        throw new Error('inStock 票数不一致');
+      }
     }
 
-    const hasInvalidCode = data.codes.some((code) => typeof code !== 'string' || !Utils.normalizeBarcode(code));
-    const hasInvalidPlainCode = data.plainCodes.some((code) => typeof code !== 'string' || !/^\d{7}$/.test(code));
-    if (hasInvalidCode || hasInvalidPlainCode) {
-      throw new Error('索引文件存在非法条码');
+    if (!shipped && !inStock) {
+      throw new Error('索引文件缺少 shippedOut 和 inStock 数据');
     }
   },
 
@@ -234,6 +284,8 @@ const App = {
       (item) => item.normalizedCode === normalizedCode
     );
 
+    const partsHtml = this._buildPartsHtml(inspection.inStockParts);
+
     this.renderResultCard({
       badge: inspection.result === 'warning' ? '异常警示' : '抽检正常',
       title: inspection.normalizedCode,
@@ -241,7 +293,8 @@ const App = {
         '原始值：' + Utils.esc(inspection.rawCode) + '<br>' +
         '结果：' + Utils.esc(inspection.message) + '<br>' +
         (isDuplicate ? '<span style="color:var(--warning)">此条码已抽检过，不再重复记录</span><br>' : '') +
-        '数据源：' + Utils.esc(inspection.matchedSource),
+        '数据源：' + Utils.esc(inspection.matchedSource) +
+        partsHtml,
       className: inspection.result === 'warning' ? 'result-warning' : 'result-normal'
     });
 
@@ -258,9 +311,12 @@ const App = {
     if (inspection.result === 'warning') {
       Utils.vibrate([220, 120, 220]);
       this.showToast(isDuplicate ? '命中已出库清单（已记录）' : '命中已出库清单，请立即核查', true);
+    } else if (inspection.inStockParts) {
+      Utils.vibrate(100);
+      this.showToast(isDuplicate ? '命中在库清单（已记录）' : '命中在库清单，请核对零件');
     } else {
       Utils.vibrate(100);
-      this.showToast(isDuplicate ? '未命中（已记录）' : '未命中已出库清单');
+      this.showToast(isDuplicate ? '未命中（已记录）' : '未命中任何清单');
     }
 
     this._showInspectionActions();
@@ -268,17 +324,96 @@ const App = {
 
   _buildInspectionResult(normalizedCode, rawText) {
     const plainCode = Utils.toPlainBarcode(normalizedCode);
-    const isMatched = this._fullCodeSet.has(normalizedCode) || this._plainCodeSet.has(plainCode);
+    const isShippedOut = this._shippedOutCodeSet.has(normalizedCode) || this._shippedOutPlainSet.has(plainCode);
+    const inStockItems = this._inStockCodeSet.has(normalizedCode)
+      ? this._inStockMap[normalizedCode]
+      : this._inStockPlainSet.has(plainCode)
+        ? this._inStockMap['JY' + plainCode] || null
+        : null;
+
+    if (isShippedOut) {
+      return {
+        id: Utils.generateId(),
+        rawCode: rawText,
+        normalizedCode,
+        plainCode,
+        result: 'warning',
+        message: '命中已出库清单，疑似异常出库',
+        matchedSource: this._indexData ? this._indexData.source : '-',
+        inStockParts: null,
+        scannedAt: Utils.nowISO()
+      };
+    }
+
+    if (inStockItems && Array.isArray(inStockItems) && inStockItems.length > 0) {
+      return {
+        id: Utils.generateId(),
+        rawCode: rawText,
+        normalizedCode,
+        plainCode,
+        result: 'normal',
+        message: '命中在库清单，请核对以下零件信息',
+        matchedSource: this._indexData ? this._indexData.source : '-',
+        inStockParts: inStockItems.slice(),
+        scannedAt: Utils.nowISO()
+      };
+    }
+
     return {
       id: Utils.generateId(),
       rawCode: rawText,
       normalizedCode,
       plainCode,
-      result: isMatched ? 'warning' : 'normal',
-      message: isMatched ? '命中已出库清单，疑似异常出库' : '未命中已出库清单，可继续抽检',
+      result: 'normal',
+      message: '未命中任何清单，可继续抽检',
       matchedSource: this._indexData ? this._indexData.source : '-',
+      inStockParts: null,
       scannedAt: Utils.nowISO()
     };
+  },
+
+  _buildPartsHtml(parts) {
+    if (!parts || !Array.isArray(parts) || parts.length === 0) return '';
+    const rows = parts.map((item) => {
+      const part = item.part || '-';
+      const qty = item.qty != null ? item.qty : null;
+      const moqPerTray = this._partTrayMap[part] || null;
+
+      let trayInfo = '-';
+      if (qty != null && moqPerTray && moqPerTray > 0) {
+        const fullTrays = Math.floor(qty / moqPerTray);
+        const remainder = qty % moqPerTray;
+        const totalTrays = (qty / moqPerTray).toFixed(1);
+        if (remainder === 0) {
+          trayInfo = totalTrays + ' 托';
+        } else if (fullTrays > 0) {
+          trayInfo = fullTrays + ' 托 + ' + remainder + ' 件';
+        } else {
+          trayInfo = '0 托 + ' + remainder + ' 件';
+        }
+        trayInfo += '<br><span class="parts-ref">每托 ' + moqPerTray + ' 件</span>';
+      } else if (qty != null) {
+        trayInfo = String(qty);
+      }
+
+      return (
+        '<tr>' +
+          '<td>' + Utils.esc(part) + '</td>' +
+          '<td>' + Utils.esc(String(qty != null ? qty : '-')) + '</td>' +
+          '<td>' + trayInfo + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    return (
+      '<div class="parts-detail">' +
+        '<div class="parts-detail-title">在库零件明细</div>' +
+        '<table class="parts-table">' +
+          '<thead><tr><th>零件号</th><th>剩余数量</th><th>托数</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>'
+    );
   },
 
   _restartScannerWithDelay() {

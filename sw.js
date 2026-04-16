@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '20260416-02';
+const VERSION = '20260416-04';
 const CACHE_NAME = 'inventory-' + VERSION;
 const INDEX_URL = '/docs/outbound-index.json';
 const ASSETS = [
